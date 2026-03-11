@@ -1,0 +1,118 @@
+version: '3.8'
+
+services:
+  openclaw:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: openclaw-guarded
+    restart: unless-stopped
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '${DOCKER_CPU_LIMIT:-2}'
+          memory: ${DOCKER_MEMORY_LIMIT:-4G}
+        reservations:
+          cpus: '${DOCKER_CPU_RESERVATION:-0.5}'
+          memory: ${DOCKER_MEMORY_RESERVATION:-512M}
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+        window: 60s
+    
+    # 端口映射
+    ports:
+      - "3000:3000"
+      - "8080:8080"  # 健康检查端口（如需要）
+    
+    # 持久化存储
+    volumes:
+      - openclaw_data:/home/node/.openclaw
+      - openclaw_backups:/home/node/openclaw-backups
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # 用于自我重启
+    
+    # 环境变量
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - GUARD_ENABLED=${GUARD_ENABLED:-true}
+      - ALERT_WEBHOOK_FEISHU=${ALERT_WEBHOOK_FEISHU}
+      - ALERT_WEBHOOK_DINGTALK=${ALERT_WEBHOOK_DINGTALK}
+      - ALERT_WEBHOOK_SLACK=${ALERT_WEBHOOK_SLACK}
+      - ALERT_LEVEL_THRESHOLD=${ALERT_LEVEL_THRESHOLD:-warning}
+      - BACKUP_RETENTION_HOURS=${BACKUP_RETENTION_HOURS:-48}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-7}
+      - BACKUP_COMPRESS=${BACKUP_COMPRESS:-true}
+      - GIT_AUTO_COMMIT=${GIT_AUTO_COMMIT:-true}
+      - GIT_COMMIT_INTERVAL=${GIT_COMMIT_INTERVAL:-5}
+      - GIT_USER_NAME=${GIT_USER_NAME:-OpenClaw Guard}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-guard@openclaw.local}
+      - HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-30}
+      - HEALTH_CHECK_TIMEOUT=${HEALTH_CHECK_TIMEOUT:-10}
+      - HEALTH_CHECK_RETRIES=${HEALTH_CHECK_RETRIES:-3}
+      - HEALTH_CHECK_ENDPOINT=${HEALTH_CHECK_ENDPOINT:-http://localhost:3000/health}
+      - DEBUG=${DEBUG:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "${HEALTH_CHECK_ENDPOINT:-http://localhost:3000/health}"]
+      interval: ${HEALTH_CHECK_INTERVAL:-30}s
+      timeout: ${HEALTH_CHECK_TIMEOUT:-10}s
+      retries: ${HEALTH_CHECK_RETRIES:-3}
+      start_period: 60s
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 可选：备份同步服务
+  backup-sync:
+    image: rclone/rclone:latest
+    container_name: openclaw-backup-sync
+    restart: unless-stopped
+    profiles:
+      - remote-sync  # 使用 --profile remote-sync 启动
+    volumes:
+      - openclaw_backups:/backups:ro
+      - ./rclone.conf:/config/rclone/rclone.conf:ro
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - RCLONE_REMOTE=${RCLONE_REMOTE:-s3:openclaw-backups}
+      - REMOTE_SYNC_INTERVAL=${REMOTE_SYNC_INTERVAL:-3600}
+    command: >
+      sh -c "while true; do
+        echo \"[$(date)] Starting backup sync...\";
+        rclone sync /backups ${RCLONE_REMOTE} --progress;
+        echo \"[$(date)] Sync completed. Next sync in ${REMOTE_SYNC_INTERVAL}s\";
+        sleep ${REMOTE_SYNC_INTERVAL};
+      done"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+volumes:
+  openclaw_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/data
+  
+  openclaw_backups:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/backups
+
+networks:
+  default:
+    name: openclaw-network

@@ -1,0 +1,12 @@
+# Git 自动提交（每 5 分钟检查一次）
+*/5 * * * * cd /home/node/.openclaw && git diff --quiet HEAD || (git add -A && git commit -m "auto: $(date +\%m\%d-\%H\%M)")
+
+# 智能快照（每小时）
+0 * * * * /usr/local/bin/smart-snapshot.sh
+
+# 清理过期备份（每天凌晨 3 点）
+0 3 * * * find /home/node/.openclaw/auto-backups -name "*.json" -mtime +2 -delete
+0 3 * * * find /home/node/.openclaw/crash-logs -name "*.crash-*" -mtime +7 -delete
+
+# 磁盘空间检查（每 6 小时）
+0 */6 * * * df -h /home/node/openclaw-backups | awk 'NR==2 {if (int($5) > 80) print "WARNING: Backup disk usage is " $5}' | xargs -r python3 /usr/local/bin/alert.py warning "Disk Space Alert"

@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.pyo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Data directories (runtime generated)
+data/
+backups/
+
+# Rclone config (contains credentials)
+rclone.conf
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.docker/
+
+# Temporary files
+/tmp/
+*.tmp
