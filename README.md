@@ -15,22 +15,48 @@
 
 ## 快速开始
 
+### 方式一：1Panel 用户（推荐）
+
+如果你的 OpenClaw 通过 1Panel 管理，使用宿主机 Sidecar 模式安装，不动 OpenClaw 容器本身：
+
 ```bash
-# 1. 克隆仓库
-git clone https://github.com/YOUR_USERNAME/openclaw-guard.git
+# 1. SSH 登录服务器，克隆仓库
+cd /opt
+git clone https://github.com/stamns/openclaw-guard.git
 cd openclaw-guard
 
-# 2. 配置环境变量
+# 2. 找到 OpenClaw 数据目录
+docker inspect $(docker ps --format '{{.Names}}' | grep -i claw) | grep -A5 Mounts
+
+# 3. 配置环境变量（把上一步看到的 Source 路径填入 OPENCLAW_DATA_DIR）
+cp .env.example /etc/openclaw-guard.env
+nano /etc/openclaw-guard.env
+
+# 4. 一键安装
+bash install-for-1panel.sh
+
+# 5. 验证
+systemctl status openclaw-guard
+openclaw-guard-rollback.sh --list
+```
+
+卸载：`bash uninstall.sh`
+
+### 方式二：Docker Compose 部署
+
+如果你自己管理 Docker Compose：
+
+```bash
+git clone https://github.com/stamns/openclaw-guard.git
+cd openclaw-guard
 cp .env.example .env
 # 编辑 .env，填入告警 webhook 等配置
-
-# 3. 一键启动
-docker-compose up -d
-
-# 4. 查看状态
-docker-compose ps
-docker-compose logs -f openclaw
+cd docker && docker-compose up -d
 ```
+
+### 方式三：裸机部署
+
+详见 [部署指南](docs/DEPLOYMENT.md)
 
 ## 架构概览
 
@@ -60,6 +86,8 @@ docker-compose logs -f openclaw
 
 ```
 openclaw-guard/
+├── install-for-1panel.sh          # 1Panel 一键安装脚本
+├── uninstall.sh                   # 一键卸载脚本
 ├── docker/
 │   ├── Dockerfile                 # 主镜像构建文件
 │   └── docker-compose.yml         # 完整编排配置
@@ -72,6 +100,8 @@ openclaw-guard/
 ├── config/
 │   ├── mcp-safe-config.py         # MCP 安全修改工具
 │   └── crontab                    # 定时任务配置
+├── tests/
+│   └── test-all.sh                # 测试套件
 ├── docs/                          # 详细文档
 ├── .env.example                   # 环境变量示例
 ├── .gitignore                     # Git 忽略规则
@@ -83,10 +113,12 @@ openclaw-guard/
 
 | 场景 | 命令 | 预计时间 |
 |------|------|---------|
-| 配置刚改错 | `docker exec openclaw openclaw-rollback --immediate` | 1秒 |
-| 容器崩溃循环 | 自动恢复，无需操作 | 10-30秒 |
-| 回到 2 小时前 | `docker exec openclaw openclaw-rollback --time 2h` | 10秒 |
-| 查看历史版本 | `docker exec openclaw git log --oneline` | 即时 |
+| 配置刚改错 | `openclaw-guard-rollback.sh --immediate` | 1秒 |
+| 容器崩溃循环 | 自动恢复，无需操作 | 10-60秒 |
+| 回到指定快照 | `openclaw-guard-rollback.sh --snapshot 0312-1430` | 10秒 |
+| 查看历史版本 | `openclaw-guard-rollback.sh --list` | 即时 |
+| 对比配置差异 | `openclaw-guard-rollback.sh --diff` | 即时 |
+| Git 回滚 | `openclaw-guard-rollback.sh --git <commit>` | 5秒 |
 | 服务器彻底丢失 | 从云端下载备份，重新部署 | 5-30分钟 |
 
 ## 贡献
