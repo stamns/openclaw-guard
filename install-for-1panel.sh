@@ -87,12 +87,11 @@ echo -e "${GREEN}✓${NC} 目录结构已创建"
 
 # 初始化 Git
 if [ ! -d "$DATA_DIR/.git" ]; then
-    cd "$DATA_DIR"
-    git init -q
-    git config user.email "guard@openclaw.local"
-    git config user.name "OpenClaw Guard"
-    git add .
-    git commit -m "guard: initial snapshot" -q
+    git -C "$DATA_DIR" init -q
+    git -C "$DATA_DIR" config user.email "guard@openclaw.local"
+    git -C "$DATA_DIR" config user.name "OpenClaw Guard"
+    git -C "$DATA_DIR" add .
+    git -C "$DATA_DIR" commit -m "guard: initial snapshot" -q
     echo -e "${GREEN}✓${NC} Git 版本控制已初始化"
 else
     echo -e "${GREEN}✓${NC} Git 已存在，跳过"
@@ -445,21 +444,20 @@ case "${1:-}" in
         ;;
 
     --git)
-        cd "$DATA_DIR"
         if [ -z "$2" ]; then
             echo -e "${BLUE}=== Git 历史 ===${NC}"
-            git log --oneline --graph -20
+            git -C "$DATA_DIR" log --oneline --graph -20
             echo ""
             echo "用法: openclaw-guard-rollback.sh --git <commit-hash>"
         else
             echo -e "${YELLOW}回滚到 Git 提交: $2${NC}"
-            git stash push -m "before-rollback-$(date +%m%d-%H%M%S)" 2>/dev/null || true
-            git checkout "$2" -- openclaw.json
+            git -C "$DATA_DIR" stash push -m "before-rollback-$(date +%m%d-%H%M%S)" 2>/dev/null || true
+            git -C "$DATA_DIR" checkout "$2" -- openclaw.json
             if [ -n "$CONTAINER_NAME" ]; then
                 docker restart "$CONTAINER_NAME"
             fi
             echo -e "${GREEN}✓ 已恢复到 $2${NC}"
-            echo "撤销: cd $DATA_DIR && git stash pop"
+            echo "撤销: git -C $DATA_DIR stash pop"
         fi
         ;;
 
