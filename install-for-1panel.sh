@@ -16,7 +16,8 @@ fi
 
 source "$ENV_FILE"
 
-DATA_DIR="${OPENCLAW_DATA_DIR}"
+DATA_DIR="${OPENCLAW_DATA_DIR:-/opt/1panel/apps/openclaw/openclaw/data/conf}"
+WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-/opt/1panel/apps/openclaw/openclaw/data/workspace}"
 BACKUP_DIR="/opt/openclaw-guard-backups"
 CONTAINER_NAME=$(docker ps --format '{{.Names}}' | grep -i claw | head -1)
 
@@ -45,7 +46,8 @@ if [ ! -d "$DATA_DIR" ]; then
     exit 1
 fi
 
-echo -e "数据目录:   ${GREEN}$DATA_DIR${NC}"
+echo -e "配置目录:   ${GREEN}$DATA_DIR${NC}"
+echo -e "工作区目录: ${GREEN}$WORKSPACE_DIR${NC}"
 echo -e "容器名称:   ${GREEN}${CONTAINER_NAME:-未找到}${NC}"
 echo -e "备份目录:   ${GREEN}$BACKUP_DIR${NC}"
 echo ""
@@ -113,10 +115,11 @@ echo "生成适配脚本..."
 cat > /usr/local/bin/openclaw-guard-watch.sh << 'WATCHEOF'
 #!/bin/bash
 # openclaw-guard-watch.sh - 实时文件监控
-# 监控 OpenClaw 数据目录，任何修改前自动快照
+# 适配 1Panel 双目录挂载：conf + workspace
 
 source /etc/openclaw-guard.env
-DATA_DIR="${OPENCLAW_DATA_DIR}"
+DATA_DIR="${OPENCLAW_DATA_DIR:-/opt/1panel/apps/openclaw/openclaw/data/conf}"
+WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-/opt/1panel/apps/openclaw/openclaw/data/workspace}"
 BACKUP_DIR="${DATA_DIR}/auto-backups"
 LOG_FILE="${BACKUP_DIR}/watch.log"
 
@@ -127,13 +130,15 @@ log() {
 }
 
 log "OpenClaw Guard 文件监控已启动"
-log "监控目录: $DATA_DIR"
+log "监控配置目录: $DATA_DIR"
+log "监控工作区:   $WORKSPACE_DIR"
 
+# 同时监控 conf 和 workspace 两个目录
 inotifywait -m -r -e modify,move_self,create,delete \
     --exclude '(\.git|auto-backups|crash-logs)' \
     --format '%T %w%f %e' \
     --timefmt '%Y-%m-%d %H:%M:%S' \
-    "$DATA_DIR" 2>/dev/null | while read timestamp file event; do
+    "$DATA_DIR" "$WORKSPACE_DIR" 2>/dev/null | while read timestamp file event; do
 
     NANO_TS=$(date +%m%d-%H%M%S-%N)
 
@@ -144,14 +149,14 @@ inotifywait -m -r -e modify,move_self,create,delete \
         log "Config snapshot: $BACKUP_FILE (event: $event)"
     fi
 
-    # Workspace 文件变更：快照
-    if [[ "$file" == *".md"* ]] && [[ "$file" != *"auto-backups"* ]]; then
+    # Workspace 文件变更：快照（包括 .md 和其他重要文件）
+    if [[ "$file" == *"$WORKSPACE_DIR"* ]] && [[ "$file" != *"auto-backups"* ]]; then
         FNAME=$(basename "$file")
         cp "$file" "$BACKUP_DIR/ws-${FNAME}-${NANO_TS}" 2>/dev/null
         log "Workspace snapshot: $FNAME (event: $event)"
     fi
 
-    # 清理 48 小时前的备份
+    # 清理过期备份
     find "$BACKUP_DIR" -name "pre-modify-*" -mmin +$((${BACKUP_RETENTION_HOURS:-48} * 60)) -delete 2>/dev/null
     find "$BACKUP_DIR" -name "ws-*" -mmin +$((${BACKUP_RETENTION_HOURS:-48} * 60)) -delete 2>/dev/null
 done
@@ -166,7 +171,7 @@ cat > /usr/local/bin/openclaw-guard-check.sh << 'CHECKEOF'
 # 每分钟由 systemd timer 触发
 
 source /etc/openclaw-guard.env
-DATA_DIR="${OPENCLAW_DATA_DIR}"
+DATA_DIR="${OPENCLAW_DATA_DIR:-/opt/1panel/apps/openclaw/openclaw/data/conf}"
 CONFIG="$DATA_DIR/openclaw.json"
 GOOD="$DATA_DIR/.last-known-good.json"
 CRASH_DIR="$DATA_DIR/crash-logs"
@@ -261,7 +266,8 @@ cat > /usr/local/bin/openclaw-guard-snapshot.sh << 'SNAPEOF'
 # 只在容器健康时创建快照，避免备份脏数据
 
 source /etc/openclaw-guard.env
-DATA_DIR="${OPENCLAW_DATA_DIR}"
+DATA_DIR="${OPENCLAW_DATA_DIR:-/opt/1panel/apps/openclaw/openclaw/data/conf}"
+WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-/opt/1panel/apps/openclaw/openclaw/data/workspace}"
 BACKUP_BASE="/opt/openclaw-guard-backups"
 CONTAINER_NAME=$(docker ps --format '{{.Names}}' | grep -i claw | head -1)
 RETENTION_HOURS="${BACKUP_RETENTION_HOURS:-48}"
@@ -298,18 +304,24 @@ LATEST=$(find "$BACKUP_BASE" -maxdepth 1 -type d -name "[0-9]*" 2>/dev/null | so
 
 if [ -n "$LATEST" ]; then
     log "创建增量快照 (基于: $(basename $LATEST))"
-    rsync -a --link-dest="$LATEST" \
+    mkdir -p "$NEW_BACKUP/conf" "$NEW_BACKUP/workspace"
+    rsync -a --link-dest="$LATEST/conf" \
         --exclude='.git' \
         --exclude='auto-backups' \
         --exclude='crash-logs' \
-        "$DATA_DIR/" "$NEW_BACKUP/"
+        "$DATA_DIR/" "$NEW_BACKUP/conf/"
+    rsync -a --link-dest="$LATEST/workspace" \
+        "$WORKSPACE_DIR/" "$NEW_BACKUP/workspace/"
 else
     log "创建首次全量快照"
+    mkdir -p "$NEW_BACKUP/conf" "$NEW_BACKUP/workspace"
     rsync -a \
         --exclude='.git' \
         --exclude='auto-backups' \
         --exclude='crash-logs' \
-        "$DATA_DIR/" "$NEW_BACKUP/"
+        "$DATA_DIR/" "$NEW_BACKUP/conf/"
+    rsync -a \
+        "$WORKSPACE_DIR/" "$NEW_BACKUP/workspace/"
 fi
 
 if [ $? -eq 0 ]; then
@@ -400,9 +412,12 @@ case "${1:-}" in
         echo -e "${YELLOW}回滚到快照: $2${NC}"
         # 保存当前状态
         BEFORE="$BACKUP_BASE/before-rollback-$(date +%m%d-%H%M%S)"
-        rsync -a --exclude='.git' --exclude='auto-backups' --exclude='crash-logs' "$DATA_DIR/" "$BEFORE/"
-        # 恢复
-        rsync -a "$SNAP/" "$DATA_DIR/" --exclude='.git' --exclude='auto-backups' --exclude='crash-logs'
+        mkdir -p "$BEFORE/conf" "$BEFORE/workspace"
+        rsync -a --exclude='.git' --exclude='auto-backups' --exclude='crash-logs' "$DATA_DIR/" "$BEFORE/conf/"
+        rsync -a "$WORKSPACE_DIR/" "$BEFORE/workspace/"
+        # 恢复（快照中有 conf/ 和 workspace/ 子目录）
+        [ -d "$SNAP/conf" ] && rsync -a "$SNAP/conf/" "$DATA_DIR/" --exclude='.git' --exclude='auto-backups' --exclude='crash-logs'
+        [ -d "$SNAP/workspace" ] && rsync -a "$SNAP/workspace/" "$WORKSPACE_DIR/"
         if [ -n "$CONTAINER_NAME" ]; then
             docker restart "$CONTAINER_NAME"
         fi
@@ -609,10 +624,11 @@ echo -e "${GREEN}✓${NC} openclaw-guard-snapshot.timer (每小时)"
 
 cat > /etc/cron.d/openclaw-guard << CRONEOF
 # OpenClaw Guard - Git 自动提交（每 5 分钟）
-*/5 * * * * root source /etc/openclaw-guard.env && cd \${OPENCLAW_DATA_DIR} && git diff --quiet HEAD 2>/dev/null || (git add -A && git commit -m "auto: \$(date +\%m\%d-\%H\%M)" -q 2>/dev/null)
+# 同时追踪 conf 和 workspace 目录的变更
+*/5 * * * * root source /etc/openclaw-guard.env && cd \${OPENCLAW_DATA_DIR} && (rsync -a --delete \${OPENCLAW_WORKSPACE_DIR}/ \${OPENCLAW_DATA_DIR}/workspace-mirror/ 2>/dev/null; git diff --quiet HEAD 2>/dev/null || (git add -A && git commit -m "auto: \$(date +\%m\%d-\%H\%M)" -q 2>/dev/null))
 
 # OpenClaw Guard - 清理过期崩溃日志（每天凌晨 3 点）
-0 3 * * * root source /etc/openclaw-guard.env && find \${OPENCLAW_DATA_DIR}/crash-logs -name "*.crash-*" -mtime +7 -delete 2>/dev/null
+0 3 * * * root source /etc/openclaw-guard.env && find \${OPENCLAW_DATA_DIR}/crash-logs -name "*.crash-*" -mtime +7 -delete 2>/dev/null; find \${OPENCLAW_DATA_DIR}/crash-logs -name "*.restart-loop-*" -mtime +7 -delete 2>/dev/null
 CRONEOF
 echo -e "${GREEN}✓${NC} cron 定时任务"
 
