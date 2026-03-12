@@ -18,9 +18,11 @@ echo "停止服务..."
 systemctl stop openclaw-guard.service 2>/dev/null || true
 systemctl stop openclaw-guard-check.timer 2>/dev/null || true
 systemctl stop openclaw-guard-snapshot.timer 2>/dev/null || true
+systemctl stop openclaw-guard-docker-watcher.service 2>/dev/null || true
 systemctl disable openclaw-guard.service 2>/dev/null || true
 systemctl disable openclaw-guard-check.timer 2>/dev/null || true
 systemctl disable openclaw-guard-snapshot.timer 2>/dev/null || true
+systemctl disable openclaw-guard-docker-watcher.service 2>/dev/null || true
 
 # 删除 systemd 文件
 rm -f /etc/systemd/system/openclaw-guard.service
@@ -28,6 +30,7 @@ rm -f /etc/systemd/system/openclaw-guard-check.service
 rm -f /etc/systemd/system/openclaw-guard-check.timer
 rm -f /etc/systemd/system/openclaw-guard-snapshot.service
 rm -f /etc/systemd/system/openclaw-guard-snapshot.timer
+rm -f /etc/systemd/system/openclaw-guard-docker-watcher.service
 systemctl daemon-reload
 echo -e "${GREEN}✓${NC} systemd 服务已移除"
 
@@ -40,6 +43,7 @@ rm -f /usr/local/bin/openclaw-guard-watch.sh
 rm -f /usr/local/bin/openclaw-guard-check.sh
 rm -f /usr/local/bin/openclaw-guard-snapshot.sh
 rm -f /usr/local/bin/openclaw-guard-rollback.sh
+rm -f /usr/local/bin/openclaw-guard-docker-watcher.sh
 rm -f /usr/local/bin/alert.py
 echo -e "${GREEN}✓${NC} 脚本已移除"
 

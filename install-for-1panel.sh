@@ -615,6 +615,175 @@ WantedBy=timers.target
 EOF
 echo -e "${GREEN}✓${NC} openclaw-guard-snapshot.timer (每小时)"
 
+# Docker 事件监听服务（核心：秒级崩溃恢复）
+cat > /usr/local/bin/openclaw-guard-docker-watcher.sh << 'DOCKERWATCHEOF'
+#!/bin/bash
+# openclaw-guard-docker-watcher.sh - Docker 事件监听器
+# 核心功能：容器一 die 就立刻校验配置并恢复，不等定时器
+# 解决问题：check.timer 每分钟才跑一次，Docker 重启循环是秒级的
+
+source /etc/openclaw-guard.env
+DATA_DIR="${OPENCLAW_DATA_DIR:-/opt/1panel/apps/openclaw/openclaw/data/conf}"
+GOOD="$DATA_DIR/.last-known-good.json"
+CONFIG="$DATA_DIR/openclaw.json"
+CRASH_DIR="$DATA_DIR/crash-logs"
+LOG="/var/log/openclaw-guard-docker-watcher.log"
+
+# 重启循环检测
+RESTART_COUNT=0
+LAST_RESTART_TIME=0
+COOLDOWN_ACTIVE=false
+
+mkdir -p "$CRASH_DIR"
+
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG"
+}
+
+recover_config() {
+    log "🔧 开始配置恢复..."
+
+    # 1. 校验 JSON 语法
+    if ! python3 -c "import json; json.load(open('$CONFIG'))" 2>/dev/null; then
+        log "❌ JSON 语法错误，立即恢复"
+
+        # 保存崩溃现场
+        CRASH_FILE="$CRASH_DIR/openclaw.json.crash-$(date +%m%d-%H%M%S)"
+        cp "$CONFIG" "$CRASH_FILE" 2>/dev/null
+        log "崩溃现场: $CRASH_FILE"
+
+        # 恢复 last-known-good
+        if [ -f "$GOOD" ]; then
+            cp "$GOOD" "$CONFIG"
+            log "✅ 已恢复 last-known-good"
+            python3 /usr/local/bin/alert.py critical "OpenClaw 崩溃循环已修复" \
+                "JSON语法错误导致容器反复重启。已自动恢复 last-known-good。崩溃现场: $CRASH_FILE" 2>/dev/null || true
+            return 0
+        else
+            log "❌ 没有 last-known-good 备份！"
+            return 1
+        fi
+    fi
+
+    # 2. 检查必需字段
+    if ! python3 -c "
+import json
+with open('$CONFIG') as f:
+    d = json.load(f)
+# 基本完整性检查：文件不能为空对象
+assert len(d) > 0, 'Empty config'
+" 2>/dev/null; then
+        log "❌ 配置逻辑错误，恢复 last-known-good"
+        CRASH_FILE="$CRASH_DIR/openclaw.json.logic-error-$(date +%m%d-%H%M%S)"
+        cp "$CONFIG" "$CRASH_FILE" 2>/dev/null
+        if [ -f "$GOOD" ]; then
+            cp "$GOOD" "$CONFIG"
+            log "✅ 已恢复 last-known-good"
+            return 0
+        fi
+        return 1
+    fi
+
+    log "✓ 配置校验通过，崩溃可能是其他原因"
+    return 0
+}
+
+log "=========================================="
+log "Docker 事件监听器启动"
+log "监听容器: *claw*"
+log "=========================================="
+
+# 监听 Docker 事件流（容器 die 事件）
+docker events --filter 'event=die' --format '{{.Actor.Attributes.name}} {{.time}}' 2>/dev/null | while read CONTAINER_NAME EVENT_TIME; do
+
+    # 只关心 OpenClaw 容器
+    if [[ "$CONTAINER_NAME" != *claw* ]] && [[ "$CONTAINER_NAME" != *Claw* ]] && [[ "$CONTAINER_NAME" != *CLAW* ]]; then
+        continue
+    fi
+
+    NOW=$(date +%s)
+    log "⚠️ 容器 $CONTAINER_NAME 死亡 (event_time: $EVENT_TIME)"
+
+    # 重启循环检测：5 分钟内超过 3 次 die = 重启循环
+    if [ $((NOW - LAST_RESTART_TIME)) -lt 300 ]; then
+        RESTART_COUNT=$((RESTART_COUNT + 1))
+    else
+        RESTART_COUNT=1
+    fi
+    LAST_RESTART_TIME=$NOW
+
+    log "重启计数: $RESTART_COUNT (5分钟窗口)"
+
+    if [ "$RESTART_COUNT" -ge 3 ]; then
+        if [ "$COOLDOWN_ACTIVE" = "false" ]; then
+            log "🚨 检测到重启循环！($RESTART_COUNT 次/5分钟) 立即介入"
+            COOLDOWN_ACTIVE=true
+
+            # 立即恢复配置
+            recover_config
+
+            # 等 Docker 自动重启容器（已恢复好的配置）
+            log "等待 Docker 重启容器（配置已修复）..."
+            sleep 10
+
+            # 检查容器是否恢复
+            CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
+            if [ "$CONTAINER_STATUS" = "running" ]; then
+                log "✅ 容器已恢复运行！"
+                RESTART_COUNT=0
+                COOLDOWN_ACTIVE=false
+            else
+                log "⚠️ 容器仍未恢复 (status: $CONTAINER_STATUS)，尝试手动重启..."
+                docker restart "$CONTAINER_NAME" 2>/dev/null || true
+                sleep 15
+                CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
+                if [ "$CONTAINER_STATUS" = "running" ]; then
+                    log "✅ 手动重启成功！"
+                else
+                    log "❌ 仍然失败，需要人工介入"
+                    python3 /usr/local/bin/alert.py critical "OpenClaw 无法自动恢复" \
+                        "容器 $CONTAINER_NAME 反复崩溃，自动恢复失败，需要人工介入！" 2>/dev/null || true
+                fi
+                RESTART_COUNT=0
+                COOLDOWN_ACTIVE=false
+            fi
+        else
+            log "冷却中，跳过（等待上次恢复生效）"
+        fi
+    else
+        # 首次或第二次 die，可能是正常重启，只做校验不介入
+        log "首次/偶发死亡，校验配置..."
+        recover_config
+    fi
+done
+
+log "Docker 事件监听器退出（异常）"
+DOCKERWATCHEOF
+chmod +x /usr/local/bin/openclaw-guard-docker-watcher.sh
+echo -e "${GREEN}✓${NC} openclaw-guard-docker-watcher.sh (Docker 事件监听器)"
+
+# Docker 事件监听 systemd 服务
+cat > /etc/systemd/system/openclaw-guard-docker-watcher.service << EOF
+[Unit]
+Description=OpenClaw Guard - Docker Event Watcher (instant crash recovery)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/openclaw-guard.env
+ExecStart=/usr/local/bin/openclaw-guard-docker-watcher.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaw-guard-docker-watcher
+
+[Install]
+WantedBy=multi-user.target
+EOF
+echo -e "${GREEN}✓${NC} openclaw-guard-docker-watcher.service (秒级崩溃恢复)"
+
 # ============================================
 # Git 自动提交 cron
 # ============================================
@@ -640,9 +809,11 @@ systemctl daemon-reload
 systemctl enable openclaw-guard.service 2>/dev/null
 systemctl enable openclaw-guard-check.timer 2>/dev/null
 systemctl enable openclaw-guard-snapshot.timer 2>/dev/null
+systemctl enable openclaw-guard-docker-watcher.service 2>/dev/null
 systemctl start openclaw-guard.service
 systemctl start openclaw-guard-check.timer
 systemctl start openclaw-guard-snapshot.timer
+systemctl start openclaw-guard-docker-watcher.service
 
 echo -e "${GREEN}✓${NC} 所有服务已启动"
 
