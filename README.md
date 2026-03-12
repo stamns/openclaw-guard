@@ -23,24 +23,29 @@
 # 1. SSH 登录服务器，克隆仓库
 cd /opt
 git clone https://github.com/stamns/openclaw-guard.git
-cd openclaw-guard
 
-# 2. 找到 OpenClaw 数据目录
-docker inspect $(docker ps --format '{{.Names}}' | grep -i claw) | grep -A5 Mounts
+# 如果 GitHub 访问慢，使用镜像：
+# git clone https://ghproxy.com/https://github.com/stamns/openclaw-guard.git
 
-# 3. 配置环境变量（把上一步看到的 Source 路径填入 OPENCLAW_DATA_DIR）
-cp .env.example /etc/openclaw-guard.env
-nano /etc/openclaw-guard.env
+# 2. 使用预填好路径的 1Panel 配置（直接可用）
+cp /opt/openclaw-guard/env-1panel.conf /etc/openclaw-guard.env
+# 如果路径不同，编辑: nano /etc/openclaw-guard.env
+
+# 3. 如果 apt 报 Google Chrome 源错误：
+# mv /etc/apt/sources.list.d/google*.list /tmp/
 
 # 4. 一键安装
-bash install-for-1panel.sh
+bash /opt/openclaw-guard/install-for-1panel.sh
 
-# 5. 验证
-systemctl status openclaw-guard
-openclaw-guard-rollback.sh --list
+# 5. 验证五层防护
+systemctl status openclaw-guard.service          # 服务状态
+openclaw-guard-check.sh                          # 健康检查
+openclaw-guard-snapshot.sh                       # 手动快照
+openclaw-guard-rollback.sh --list                # 查看快照
+git -C /opt/1panel/apps/openclaw/openclaw/data/conf log --oneline  # Git 历史
 ```
 
-卸载：`bash uninstall.sh`
+卸载：`bash /opt/openclaw-guard/uninstall.sh`
 
 ### 方式二：Docker Compose 部署
 
