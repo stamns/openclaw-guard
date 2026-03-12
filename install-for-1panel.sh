@@ -135,21 +135,20 @@ log "监控工作区:   $WORKSPACE_DIR"
 # 同时监控 conf 和 workspace 两个目录
 inotifywait -m -r -e modify,move_self,create,delete \
     --exclude '(\.git|auto-backups|crash-logs)' \
-    --format '%T %w%f %e' \
-    --timefmt '%Y-%m-%d %H:%M:%S' \
-    "$DATA_DIR" "$WORKSPACE_DIR" 2>/dev/null | while read timestamp file event; do
+    --format '%w%f|%e' \
+    "$DATA_DIR" "$WORKSPACE_DIR" 2>/dev/null | while IFS='|' read file event; do
 
     NANO_TS=$(date +%m%d-%H%M%S-%N)
 
     # 配置文件变更：立即快照
-    if [[ "$file" == *"openclaw.json"* ]] && [[ "$file" != *".last-known-good"* ]]; then
+    if [[ "$file" == *"openclaw.json" ]] && [[ "$file" != *".last-known-good"* ]]; then
         BACKUP_FILE="$BACKUP_DIR/pre-modify-${NANO_TS}.json"
         cp "$DATA_DIR/openclaw.json" "$BACKUP_FILE" 2>/dev/null
         log "Config snapshot: $BACKUP_FILE (event: $event)"
     fi
 
     # Workspace 文件变更：快照（包括 .md 和其他重要文件）
-    if [[ "$file" == *"$WORKSPACE_DIR"* ]] && [[ "$file" != *"auto-backups"* ]]; then
+    if [[ "$file" == "$WORKSPACE_DIR"* ]] && [[ "$file" != *"auto-backups"* ]]; then
         FNAME=$(basename "$file")
         cp "$file" "$BACKUP_DIR/ws-${FNAME}-${NANO_TS}" 2>/dev/null
         log "Workspace snapshot: $FNAME (event: $event)"
