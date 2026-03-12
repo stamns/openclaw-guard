@@ -693,16 +693,28 @@ log "Docker 事件监听器启动"
 log "监听容器: *claw*"
 log "=========================================="
 
-# 监听 Docker 事件流（容器 die 事件）
-docker events --filter 'event=die' --format '{{.Actor.Attributes.name}} {{.time}}' 2>/dev/null | while read CONTAINER_NAME EVENT_TIME; do
+# 确保 docker 可用
+if ! docker info >/dev/null 2>&1; then
+    log "❌ Docker 不可用，等待 10 秒后重试..."
+    sleep 10
+fi
 
-    # 只关心 OpenClaw 容器
-    if [[ "$CONTAINER_NAME" != *claw* ]] && [[ "$CONTAINER_NAME" != *Claw* ]] && [[ "$CONTAINER_NAME" != *CLAW* ]]; then
-        continue
-    fi
+# 监听 Docker 事件流（容器 die 事件）
+# 使用 --format 只输出容器名，避免解析问题
+# 用 while + process substitution 避免子 shell 变量丢失
+while read -r LINE; do
+    # LINE 格式: 容器名
+    CONTAINER_NAME="$LINE"
+
+    # 只关心 OpenClaw 容器（不区分大小写）
+    LOWER_NAME=$(echo "$CONTAINER_NAME" | tr '[:upper:]' '[:lower:]')
+    case "$LOWER_NAME" in
+        *claw*|*openclaw*) ;;
+        *) continue ;;
+    esac
 
     NOW=$(date +%s)
-    log "⚠️ 容器 $CONTAINER_NAME 死亡 (event_time: $EVENT_TIME)"
+    log "⚠️ 容器 $CONTAINER_NAME 死亡"
 
     # 重启循环检测：5 分钟内超过 3 次 die = 重启循环
     if [ $((NOW - LAST_RESTART_TIME)) -lt 300 ]; then
@@ -755,9 +767,10 @@ docker events --filter 'event=die' --format '{{.Actor.Attributes.name}} {{.time}
         log "首次/偶发死亡，校验配置..."
         recover_config
     fi
-done
+done < <(docker events --filter 'event=die' --format '{{.Actor.Attributes.name}}' 2>&1)
 
-log "Docker 事件监听器退出（异常）"
+log "Docker 事件监听器退出（异常，将由 systemd 重启）"
+exit 1
 DOCKERWATCHEOF
 chmod +x /usr/local/bin/openclaw-guard-docker-watcher.sh
 echo -e "${GREEN}✓${NC} openclaw-guard-docker-watcher.sh (Docker 事件监听器)"
